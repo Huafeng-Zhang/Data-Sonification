@@ -1,0 +1,169 @@
+---
+title: "GAM trend estimation"
+author: "Huafeng Zhang"
+date: ''
+output:
+  html_document: default
+  word_document: default
+word_document:
+  fig_height: 7
+  fig_width: 10
+  reference_docx: mystyles.docx
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data preparation and linear trend and monthly means model:
+
+
+```{r,warning=F,message=F}
+
+rawd1 <- read.csv("https://montana.box.com/shared/static/s2iudylpfa8gadsnezm7utov2tu9br6l.csv", header= T)
+
+# My first simple idea - generate floor truncated years and then subtract
+rawd1$Year <- (floor(rawd1$DATE/100))
+rawd1$Month <- round((rawd1$DATE/100 - rawd1$Year) * 100, 1)
+rawd1$Yearfrac <- rawd1$Year + (rawd1$Month - 1) / 12
+rawd1$Monthf <- factor(rawd1$Month)
+
+model1 <- lm(MMXT ~ Yearfrac + Monthf,data = rawd1)
+source("https://montana.box.com/shared/static/u75xpj5lqbp12xuj18vlsn2krrldr9s7.r") 
+#Function to clean up lm model summaries
+print(summary(model1), concise = T)
+
+# Or using pander:
+require(pander)
+pander(summary(model1))
+
+#There are a few missing months in the data set:
+plot(rawd1$Yearfrac,type = "l")
+plot(diff(rawd1$Yearfrac) ~ rawd1$Yearfrac[-1],type = "p")
+plot(MMXT ~ Yearfrac,data = rawd1,type = "l")
+
+#Complete Yearfrac and Month:
+fd <- 1:(115*12 + 11)
+ts_complete <- ts(fd,start = 1900,freq = 12)
+completetime <- data.frame(Yearfrac = round(as.vector(time(ts_complete)), 4),Month = as.vector(cycle(ts_complete)))
+summary(completetime)
+tail(completetime)
+summary(rawd1)
+```
+
+## Fit GAM trend
+```{r,warning=F,message=F,fig.width=8,fig.height=10}
+require(mgcv)
+gam1<- gam(MMXT ~ s(Yearfrac,bs = "ts",k = 53) + s(Month, bs ="cc", k = 12), data = rawd1)
+gam.check(gam1)
+summary(gam1)
+plot(gam1, scale = -1, pages = 1, shade = T, shade.col = "skyblue")
+plot(gam1, scale = 0, pages = 1, shade = T, shade.col = "skyblue")
+
+#Components for sonification at original times of observation:
+predres <- predict(gam1, type = "terms")
+
+#Long term trend:
+esttrend <- 55.2715 + predres[,1]
+plot(esttrend ~ rawd1$Yearfrac, type = "l")
+
+#Seasonal component:
+estseasonal <- predres[,2]
+plot(estseasonal ~ rawd1$Yearfrac, type = "l") #gap in 50s from missing data...
+
+#Residuals from trend+seasonal model:
+resids1 <- residuals(gam1)
+plot(resids1 ~ rawd1$Yearfrac, type = "l") #The random unexplained variation in the mean monthly maximum temperatures
+par(mfrow = c(3,1))
+plot(esttrend ~ rawd1$Yearfrac, type = "l")
+plot(estseasonal ~ rawd1$Yearfrac, type = "l") 
+plot(resids1 ~ rawd1$Yearfrac, type = "l")
+
+#Repeat but make on complete times without gaps:
+residsbytime <- data.frame(Yearfrac_obs = round(rawd1$Yearfrac, 4), resids1)
+merge1 <- merge(x = completetime, y = residsbytime, by.x = "Yearfrac",by.y = "Yearfrac_obs")
+residseries <- matrix(nrow = length(completetime[,1]), ncol = 1,0)
+residseries[match(x = residsbytime$Yearfrac,table = completetime$Yearfrac)] <- residsbytime$resids1
+par(mfrow = c(1,1))
+plot(residseries ~ completetime$Yearfrac, col = as.numeric(residseries == 0) + 1) 
+#Shows that missing responses were given 0 residuals
+
+#Now to build a complete data set with components:
+predres2 <- predict(gam1,newdata = completetime, type = "terms")
+#head(predres2)
+#head(completecomponents)
+esttrend <- 55.2715 + predres2[,1]
+estseasonal <- predres2[,2]
+completecomponents <- data.frame(esttrend, estseasonal, residseries, Yearfrac = completetime$Yearfrac)
+write.csv(completecomponents, "BozemanTemp.csv")
+par(mfrow = c(3,1))
+```
+
+# Use audiolyzR
+```{r}
+library(audiolyzR)
+audioScatter(esttrend ~ Yearfrac, data = completecomponents)
+audioScatter(estseasonal ~ Yearfrac, data = completecomponents) 
+audioScatter(residseries ~ Yearfrac, data = completecomponents)
+
+audioScatter(MMXT ~ Year,data = rawd1)
+audioScatter(MMXT ~ Month,data = rawd1)
+audioScatter(MMXT ~ Yearfrac,data = rawd1)
+```
+
+# Use sonify
+```{r}
+library(sonify)
+
+sonify(x = completecomponents$Yearfrac, y = completecomponents$esttrend, waveform ="sine", interpolation ="spline",
+       duration = 5, flim = c(440, 880), ticks = NULL, tick_len = 0.05,
+       pulse_len = 0, pulse_amp = 0.2, noise_interval = c(0, 0),
+       noise_amp = 0.5, amp_level = 1, na_freq = 300, stereo = TRUE,
+       smp_rate = 44100, play = TRUE, player = NULL, player_args = NULL)
+
+sonify(x = completecomponents$Yearfrac, y = completecomponents$estseasonal, waveform ="sine", interpolation ="spline",
+       duration = 5, flim = c(440, 880), ticks = NULL, tick_len = 0.05,
+       pulse_len = 0, pulse_amp = 0.2, noise_interval = c(0, 0),
+       noise_amp = 0.5, amp_level = 1, na_freq = 300, stereo = TRUE,
+       smp_rate = 44100, play = TRUE, player = NULL, player_args = NULL)
+
+sonify(x = completecomponents$Yearfrac, y = completecomponents$residseries, waveform ="sine", interpolation ="spline",
+       duration = 5, flim = c(440, 880), ticks = NULL, tick_len = 0.05,
+       pulse_len = 0, pulse_amp = 0.2, noise_interval = c(0, 0),
+       noise_amp = 0.5, amp_level = 1, na_freq = 300, stereo = TRUE,
+       smp_rate = 44100, play = TRUE, player = NULL, player_args = NULL)
+
+```
+
+# Use seewave
+```{r}
+library(seewave)
+```
+
+# Use audio
+```{r}
+library(audio)
+play_sine <- function(freq, seconds) {
+  sample_freq <- 4 * freq
+  samples <- sample_freq * seconds
+  play(sin(1:samples), sample_freq)
+}
+
+temp2freq <- function(temp) {
+  1000 + 100 * temp
+}
+play_short <- function(freq) {
+  a <- play_sine(freq, .1)
+  wait(a)
+}
+
+lapply(temp2freq(rawd1$MMXT), play_short)
+temp2freq(rawd1$MMXT)
+for (i in 1:164) {
+  play_short(temp2freq(rawd1$MMXT[i]))
+}
+```
+
+
+
+
